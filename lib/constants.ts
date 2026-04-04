@@ -1,6 +1,5 @@
 export const STORAGE_KEYS = {
   entries: "productivity.entries.v1",
-  theme: "productivity.theme.v1",
   auth: "productivity.auth.v1"
 } as const;
 
