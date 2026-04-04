@@ -1,5 +1,6 @@
 import { render, screen, within } from "@testing-library/react";
 import { DashboardClient } from "@/components/dashboard-client";
+import { saveSession } from "@/lib/auth";
 import { saveEntries } from "@/lib/storage";
 import { getTodayDateKey } from "@/lib/date";
 
@@ -10,6 +11,12 @@ describe("DashboardClient", () => {
 
   it("renders latest score from storage", async () => {
     const today = getTodayDateKey();
+    saveSession({
+      name: "Sai",
+      email: "sai@example.com",
+      loggedInAt: new Date().toISOString()
+    });
+
     saveEntries([
       {
         date: today,

@@ -2,7 +2,7 @@
 
 import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { loadSession, saveSession } from "@/lib/auth";
+import { authenticateAccount, loadSession } from "@/lib/auth";
 
 const highlights = [
   {
@@ -35,22 +35,28 @@ export function LoginPage() {
     }
   }, [router]);
 
-  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const trimmedName = name.trim();
     const trimmedEmail = email.trim();
 
-    if (!trimmedName || !trimmedEmail || !password) {
-      setError("Please fill your name, email, and password.");
+    if (!trimmedEmail || !password) {
+      setError("Please fill your email and password.");
       return;
     }
 
-    saveSession({
-      name: trimmedName,
-      email: trimmedEmail,
-      loggedInAt: new Date().toISOString()
-    });
-    router.replace("/");
+    setError("");
+
+    try {
+      await authenticateAccount({
+        name: trimmedName,
+        email: trimmedEmail,
+        password
+      });
+      router.replace("/");
+    } catch (authError) {
+      setError(authError instanceof Error ? authError.message : "Unable to access this workspace.");
+    }
   };
 
   return (
@@ -142,7 +148,7 @@ export function LoginPage() {
                   <input
                     id="login-name"
                     className="field-input"
-                    placeholder="Your name"
+                    placeholder="Needed for first setup"
                     autoComplete="name"
                     value={name}
                     onChange={(event) => setName(event.target.value)}
@@ -191,7 +197,7 @@ export function LoginPage() {
                     Continue
                   </button>
                   <p className="text-sm text-[var(--text-secondary)]">
-                    Web-first daily performance tracker
+                    First visit creates a local workspace. Returning visits use the same email and password.
                   </p>
                 </div>
               </form>

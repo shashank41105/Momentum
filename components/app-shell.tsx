@@ -3,9 +3,10 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
+import { APP_EVENTS } from "@/lib/constants";
 import { clearSession, loadSession } from "@/lib/auth";
 import { formatDateLabel, getTodayDateKey } from "@/lib/date";
-import { clearEntries, loadEntries } from "@/lib/storage";
+import { clearEntries, loadEntries, syncEntriesFromCloud } from "@/lib/storage";
 import { calculateStreak } from "@/lib/streak";
 import type { AuthSession, DailyEntry } from "@/lib/types";
 
@@ -33,15 +34,35 @@ export function AppShell({ children }: AppShellProps) {
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
-    const nextSession = loadSession();
-    setSession(nextSession);
-    setEntries(loadEntries());
-    setReady(true);
+    const syncFromStorage = async () => {
+      const nextSession = loadSession();
+      setSession(nextSession);
+      setEntries(loadEntries(nextSession?.email));
+      setReady(true);
 
-    if (!nextSession) {
-      router.replace("/login");
-      return;
-    }
+      if (!nextSession) {
+        router.replace("/login");
+        return;
+      }
+
+      const syncedEntries = await syncEntriesFromCloud(nextSession.email);
+      setEntries(syncedEntries);
+    };
+
+    void syncFromStorage();
+
+    const handleStorage = () => {
+      void syncFromStorage();
+    };
+    window.addEventListener("storage", handleStorage);
+    window.addEventListener(APP_EVENTS.authChanged, handleStorage);
+    window.addEventListener(APP_EVENTS.entriesChanged, handleStorage);
+
+    return () => {
+      window.removeEventListener("storage", handleStorage);
+      window.removeEventListener(APP_EVENTS.authChanged, handleStorage);
+      window.removeEventListener(APP_EVENTS.entriesChanged, handleStorage);
+    };
   }, [pathname, router]);
 
   const userFirstName = useMemo(() => {
@@ -72,7 +93,15 @@ export function AppShell({ children }: AppShellProps) {
   };
 
   const handleResetApp = () => {
-    clearEntries();
+    const confirmed = window.confirm(
+      `Delete all saved check-ins for ${session?.email ?? "this workspace"}? This cannot be undone.`
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    clearEntries(session?.email);
     setEntries([]);
     router.refresh();
   };

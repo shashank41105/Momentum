@@ -40,7 +40,17 @@ export type DailyEntryInput = {
 };
 
 export type AuthSession = {
+  id?: string;
   name: string;
   email: string;
   loggedInAt: string;
+  provider?: "local" | "supabase";
+};
+
+export type LocalAccount = {
+  name: string;
+  email: string;
+  passwordHash: string;
+  createdAt: string;
+  updatedAt: string;
 };

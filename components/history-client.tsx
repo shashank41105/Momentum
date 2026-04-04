@@ -1,8 +1,10 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { APP_EVENTS } from "@/lib/constants";
+import { loadSession } from "@/lib/auth";
 import { formatDateLabel } from "@/lib/date";
-import { loadEntries } from "@/lib/storage";
+import { loadEntries, syncEntriesFromCloud } from "@/lib/storage";
 import type { DailyEntry } from "@/lib/types";
 
 function TrendBars({ entries }: { entries: DailyEntry[] }) {
@@ -105,7 +107,30 @@ export function HistoryClient() {
   const [entries, setEntries] = useState<DailyEntry[]>([]);
 
   useEffect(() => {
-    setEntries(loadEntries());
+    const syncFromStorage = async () => {
+      const ownerEmail = loadSession()?.email;
+      setEntries(loadEntries(ownerEmail));
+
+      if (ownerEmail) {
+        const syncedEntries = await syncEntriesFromCloud(ownerEmail);
+        setEntries(syncedEntries);
+      }
+    };
+
+    void syncFromStorage();
+
+    const handleStorage = () => {
+      void syncFromStorage();
+    };
+    window.addEventListener("storage", handleStorage);
+    window.addEventListener(APP_EVENTS.authChanged, handleStorage);
+    window.addEventListener(APP_EVENTS.entriesChanged, handleStorage);
+
+    return () => {
+      window.removeEventListener("storage", handleStorage);
+      window.removeEventListener(APP_EVENTS.authChanged, handleStorage);
+      window.removeEventListener(APP_EVENTS.entriesChanged, handleStorage);
+    };
   }, []);
 
   const averageScore = useMemo(() => {

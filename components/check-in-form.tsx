@@ -1,8 +1,10 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import { APP_EVENTS } from "@/lib/constants";
+import { loadSession } from "@/lib/auth";
 import { formatDateLabel, getTodayDateKey } from "@/lib/date";
-import { getEntryByDate, loadEntries, upsertEntry } from "@/lib/storage";
+import { getEntryByDate, loadEntries, syncEntriesFromCloud, upsertEntry } from "@/lib/storage";
 
 type ScoreFieldProps = {
   id: string;
@@ -124,33 +126,71 @@ export function CheckInForm() {
   const [weeklyTracked, setWeeklyTracked] = useState(0);
 
   useEffect(() => {
-    const existing = getEntryByDate(todayDate);
-    if (existing) {
-      setWork(existing.work);
-      setGym(existing.gym);
-      setDiet(existing.diet);
-      setFocusRating(existing.focusRating ?? existing.work);
-      setDeepWorkHours(existing.deepWorkHours ?? 0);
-      setTopPriorities(existing.topPriorities ?? "");
-      setIntendedWorkout(existing.intendedWorkout ?? "");
-      setIntendedDietGoal(existing.intendedDietGoal ?? "");
-      setPlannedTasks(existing.plannedTasks ?? "");
-      setCompletedTasks(existing.completedTasks ?? "");
-      setBlockers(existing.blockers ?? "");
-      setNotes(existing.notes ?? "");
-    }
+    const syncFormState = async () => {
+      const ownerEmail = loadSession()?.email;
+      let history = loadEntries(ownerEmail);
 
-    const history = loadEntries().slice(0, 7);
-    setWeeklyTracked(history.length);
-    if (!history.length) {
-      setWeeklyAverage(0);
-      return;
-    }
-    setWeeklyAverage(
-      Math.round(
-        history.reduce((sum, entry) => sum + entry.total, 0) / history.length
-      )
-    );
+      if (ownerEmail) {
+        history = await syncEntriesFromCloud(ownerEmail);
+      }
+
+      const existing = history.find((entry) => entry.date === todayDate) ?? getEntryByDate(todayDate, ownerEmail);
+      if (existing) {
+        setWork(existing.work);
+        setGym(existing.gym);
+        setDiet(existing.diet);
+        setFocusRating(existing.focusRating ?? existing.work);
+        setDeepWorkHours(existing.deepWorkHours ?? 0);
+        setTopPriorities(existing.topPriorities ?? "");
+        setIntendedWorkout(existing.intendedWorkout ?? "");
+        setIntendedDietGoal(existing.intendedDietGoal ?? "");
+        setPlannedTasks(existing.plannedTasks ?? "");
+        setCompletedTasks(existing.completedTasks ?? "");
+        setBlockers(existing.blockers ?? "");
+        setNotes(existing.notes ?? "");
+      } else {
+        setWork(5);
+        setGym(5);
+        setDiet(5);
+        setFocusRating(5);
+        setDeepWorkHours(0);
+        setTopPriorities("");
+        setIntendedWorkout("");
+        setIntendedDietGoal("");
+        setPlannedTasks("");
+        setCompletedTasks("");
+        setBlockers("");
+        setNotes("");
+      }
+
+      const recentHistory = history.slice(0, 7);
+      setWeeklyTracked(recentHistory.length);
+      if (!recentHistory.length) {
+        setWeeklyAverage(0);
+      } else {
+        setWeeklyAverage(
+          Math.round(
+            recentHistory.reduce((sum, entry) => sum + entry.total, 0) / recentHistory.length
+          )
+        );
+      }
+    };
+
+    void syncFormState();
+
+    const handleStorage = () => {
+      void syncFormState();
+    };
+
+    window.addEventListener("storage", handleStorage);
+    window.addEventListener(APP_EVENTS.authChanged, handleStorage);
+    window.addEventListener(APP_EVENTS.entriesChanged, handleStorage);
+
+    return () => {
+      window.removeEventListener("storage", handleStorage);
+      window.removeEventListener(APP_EVENTS.authChanged, handleStorage);
+      window.removeEventListener(APP_EVENTS.entriesChanged, handleStorage);
+    };
   }, [todayDate]);
 
   const previewScore = useMemo(
@@ -161,6 +201,7 @@ export function CheckInForm() {
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    const ownerEmail = loadSession()?.email;
     const savedEntry = upsertEntry({
       work,
       gym,
@@ -174,7 +215,7 @@ export function CheckInForm() {
       completedTasks,
       blockers,
       notes
-    });
+    }, todayDate, ownerEmail);
     setSavedAt(
       new Date(savedEntry.updatedAt).toLocaleTimeString([], {
         hour: "2-digit",

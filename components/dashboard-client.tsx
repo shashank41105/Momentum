@@ -2,9 +2,10 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import { APP_EVENTS } from "@/lib/constants";
 import { loadSession } from "@/lib/auth";
 import { formatDateLabel, getTodayDateKey } from "@/lib/date";
-import { loadEntries } from "@/lib/storage";
+import { loadEntries, syncEntriesFromCloud } from "@/lib/storage";
 import { calculateStreak } from "@/lib/streak";
 import type { AuthSession, DailyEntry } from "@/lib/types";
 
@@ -125,8 +126,31 @@ export function DashboardClient() {
   const today = getTodayDateKey();
 
   useEffect(() => {
-    setEntries(loadEntries());
-    setSession(loadSession());
+    const syncFromStorage = async () => {
+      const nextSession = loadSession();
+      setSession(nextSession);
+      setEntries(loadEntries(nextSession?.email));
+
+      if (nextSession?.email) {
+        const syncedEntries = await syncEntriesFromCloud(nextSession.email);
+        setEntries(syncedEntries);
+      }
+    };
+
+    void syncFromStorage();
+
+    const handleStorage = () => {
+      void syncFromStorage();
+    };
+    window.addEventListener("storage", handleStorage);
+    window.addEventListener(APP_EVENTS.authChanged, handleStorage);
+    window.addEventListener(APP_EVENTS.entriesChanged, handleStorage);
+
+    return () => {
+      window.removeEventListener("storage", handleStorage);
+      window.removeEventListener(APP_EVENTS.authChanged, handleStorage);
+      window.removeEventListener(APP_EVENTS.entriesChanged, handleStorage);
+    };
   }, []);
 
   const todayEntry = useMemo(

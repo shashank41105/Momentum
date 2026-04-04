@@ -1,7 +1,83 @@
-import { STORAGE_KEYS } from "@/lib/constants";
+import { APP_EVENTS, STORAGE_KEYS } from "@/lib/constants";
+import { loadSession, normalizeEmail } from "@/lib/auth";
 import { getTodayDateKey } from "@/lib/date";
 import { calculateTotalScore } from "@/lib/score";
+import { getSupabaseBrowserClient, isSupabaseConfigured, mapDailyEntryToRow, mapRowToDailyEntry } from "@/lib/supabase";
 import type { DailyEntry, DailyEntryInput } from "@/lib/types";
+
+function dispatchEntriesChanged(): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.dispatchEvent(new CustomEvent(APP_EVENTS.entriesChanged));
+}
+
+function resolveOwnerEmail(ownerEmail?: string): string | null {
+  const fallbackEmail = loadSession()?.email ?? null;
+  const resolved = ownerEmail ?? fallbackEmail;
+  return resolved ? normalizeEmail(resolved) : null;
+}
+
+async function getCloudContext(ownerEmail?: string): Promise<{ client: NonNullable<ReturnType<typeof getSupabaseBrowserClient>>; userId: string; email: string } | null> {
+  if (!isSupabaseConfigured()) {
+    return null;
+  }
+
+  const client = getSupabaseBrowserClient();
+  if (!client) {
+    return null;
+  }
+
+  const { data } = await client.auth.getSession();
+  const user = data.session?.user;
+  if (!user?.id || !user.email) {
+    return null;
+  }
+
+  const normalizedEmail = normalizeEmail(user.email);
+  const expectedEmail = resolveOwnerEmail(ownerEmail);
+  if (expectedEmail && normalizedEmail !== expectedEmail) {
+    return null;
+  }
+
+  return {
+    client,
+    userId: user.id,
+    email: normalizedEmail
+  };
+}
+
+function getEntriesStorageKey(ownerEmail?: string): string {
+  const resolved = resolveOwnerEmail(ownerEmail);
+  return resolved ? `${STORAGE_KEYS.entries}:${resolved}` : STORAGE_KEYS.legacyEntries;
+}
+
+function getLegacyEntries(ownerEmail?: string): string | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  const resolved = resolveOwnerEmail(ownerEmail);
+  if (!resolved) {
+    return window.localStorage.getItem(STORAGE_KEYS.legacyEntries);
+  }
+
+  const scopedKey = getEntriesStorageKey(resolved);
+  const scopedValue = window.localStorage.getItem(scopedKey);
+  if (scopedValue) {
+    return scopedValue;
+  }
+
+  const legacyValue = window.localStorage.getItem(STORAGE_KEYS.legacyEntries);
+  if (!legacyValue) {
+    return null;
+  }
+
+  window.localStorage.setItem(scopedKey, legacyValue);
+  window.localStorage.removeItem(STORAGE_KEYS.legacyEntries);
+  return legacyValue;
+}
 
 function sortEntriesDesc(entries: DailyEntry[]): DailyEntry[] {
   return [...entries].sort((a, b) => b.date.localeCompare(a.date));
@@ -35,12 +111,12 @@ function sanitizeEntry(raw: Partial<DailyEntry>): DailyEntry | null {
   };
 }
 
-export function loadEntries(): DailyEntry[] {
+export function loadEntries(ownerEmail?: string): DailyEntry[] {
   if (typeof window === "undefined") {
     return [];
   }
 
-  const serialized = window.localStorage.getItem(STORAGE_KEYS.entries);
+  const serialized = window.localStorage.getItem(getEntriesStorageKey(ownerEmail)) ?? getLegacyEntries(ownerEmail);
   if (!serialized) {
     return [];
   }
@@ -59,20 +135,76 @@ export function loadEntries(): DailyEntry[] {
   }
 }
 
-export function saveEntries(entries: DailyEntry[]): void {
+export function saveEntries(entries: DailyEntry[], ownerEmail?: string, emitEvent = true): void {
   if (typeof window === "undefined") {
     return;
   }
 
-  window.localStorage.setItem(STORAGE_KEYS.entries, JSON.stringify(sortEntriesDesc(entries)));
+  window.localStorage.setItem(getEntriesStorageKey(ownerEmail), JSON.stringify(sortEntriesDesc(entries)));
+  if (emitEvent) {
+    dispatchEntriesChanged();
+  }
 }
 
-export function getEntryByDate(dateKey: string): DailyEntry | undefined {
-  return loadEntries().find((entry) => entry.date === dateKey);
+export async function syncEntriesFromCloud(ownerEmail?: string): Promise<DailyEntry[]> {
+  const context = await getCloudContext(ownerEmail);
+  if (!context) {
+    return loadEntries(ownerEmail);
+  }
+
+  const { data, error } = await context.client
+    .from("daily_entries")
+    .select("*")
+    .eq("user_id", context.userId)
+    .order("date", { ascending: false });
+
+  if (error || !data) {
+    return loadEntries(context.email);
+  }
+
+  const entries = data.map((row) => mapRowToDailyEntry(row as Parameters<typeof mapRowToDailyEntry>[0]));
+  saveEntries(entries, context.email, false);
+  return entries;
 }
 
-export function upsertEntry(input: DailyEntryInput, dateKey = getTodayDateKey()): DailyEntry {
-  const entries = loadEntries();
+async function pushEntryToCloud(entry: DailyEntry, ownerEmail?: string): Promise<void> {
+  const context = await getCloudContext(ownerEmail);
+  if (!context) {
+    return;
+  }
+
+  const row = mapDailyEntryToRow(entry, context.userId);
+  const { error } = await context.client.from("daily_entries").upsert(row, {
+    onConflict: "user_id,date"
+  });
+
+  if (!error) {
+    await syncEntriesFromCloud(context.email);
+  }
+}
+
+async function clearEntriesInCloud(ownerEmail?: string): Promise<void> {
+  const context = await getCloudContext(ownerEmail);
+  if (!context) {
+    return;
+  }
+
+  const { error } = await context.client
+    .from("daily_entries")
+    .delete()
+    .eq("user_id", context.userId);
+
+  if (!error) {
+    dispatchEntriesChanged();
+  }
+}
+
+export function getEntryByDate(dateKey: string, ownerEmail?: string): DailyEntry | undefined {
+  return loadEntries(ownerEmail).find((entry) => entry.date === dateKey);
+}
+
+export function upsertEntry(input: DailyEntryInput, dateKey = getTodayDateKey(), ownerEmail?: string): DailyEntry {
+  const entries = loadEntries(ownerEmail);
   const existing = entries.find((entry) => entry.date === dateKey);
   const nowIso = new Date().toISOString();
   const nextEntry: DailyEntry = {
@@ -96,13 +228,27 @@ export function upsertEntry(input: DailyEntryInput, dateKey = getTodayDateKey())
 
   const withoutDate = entries.filter((entry) => entry.date !== dateKey);
   const updated = sortEntriesDesc([nextEntry, ...withoutDate]);
-  saveEntries(updated);
+  saveEntries(updated, ownerEmail);
+  void pushEntryToCloud(nextEntry, ownerEmail);
   return nextEntry;
 }
 
-export function clearEntries(): void {
+export function clearEntries(ownerEmail?: string): void {
   if (typeof window === "undefined") {
     return;
   }
-  window.localStorage.removeItem(STORAGE_KEYS.entries);
+
+  const storageKey = getEntriesStorageKey(ownerEmail);
+  window.localStorage.removeItem(storageKey);
+
+  const resolved = resolveOwnerEmail(ownerEmail);
+  if (resolved) {
+    const legacyEntries = window.localStorage.getItem(STORAGE_KEYS.legacyEntries);
+    if (legacyEntries) {
+      window.localStorage.removeItem(STORAGE_KEYS.legacyEntries);
+    }
+  }
+
+  dispatchEntriesChanged();
+  void clearEntriesInCloud(ownerEmail);
 }
